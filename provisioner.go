@@ -33,7 +33,7 @@ const (
 
 	SharedPathAnnotation = "local-path-provisioner/shared-path"
 
-	SelectedNodeName = "local-path-provisioner/selecetd-node"
+	SelectedNodeName = "local-path-provisioner/selected-node"
 )
 
 var (
@@ -166,7 +166,7 @@ func (p *LocalPathProvisioner) getRandomPathOnNode(node string) (string, error) 
 	}
 
 	if npMap.SharedPath {
-		path = "shared://"+path
+		path = "shared://" + path
 	}
 	return path, nil
 }
@@ -175,11 +175,6 @@ func (p *LocalPathProvisioner) Provision(opts pvController.ProvisionOptions) (*v
 	pvc := opts.PVC
 	if pvc.Spec.Selector != nil {
 		return nil, fmt.Errorf("claim.Spec.Selector is not supported")
-	}
-	for _, accessMode := range pvc.Spec.AccessModes {
-		if accessMode != v1.ReadWriteOnce {
-			return nil, fmt.Errorf("Only support ReadWriteOnce access mode")
-		}
 	}
 	node := opts.SelectedNode
 	if opts.SelectedNode == nil {
@@ -193,9 +188,15 @@ func (p *LocalPathProvisioner) Provision(opts pvController.ProvisionOptions) (*v
 
 	sharedPath := false
 
-	if strings.Index(basePath,"shared://") == 0 {
+	if strings.Index(basePath,"shared://") >=0  {
 		sharedPath = true
 		basePath = strings.Replace(basePath,"shared://","",1)
+	}
+
+	for _, accessMode := range pvc.Spec.AccessModes {
+		if accessMode != v1.ReadWriteOnce && !sharedPath {
+			return nil, fmt.Errorf("Only support ReadWriteOnce access mode with sharedPath value %v ",sharedPath)
+		}
 	}
 
 	name := opts.PVName
@@ -489,6 +490,7 @@ func canonicalizeConfig(data *ConfigData) (cfg *Config, err error) {
 			}
 			npMap.Paths[path] = struct{}{}
 		}
+		npMap.SharedPath = n.SharedPath
 	}
 	return cfg, nil
 }

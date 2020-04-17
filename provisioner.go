@@ -30,6 +30,10 @@ const (
 	KeyNode = "kubernetes.io/hostname"
 
 	NodeDefaultNonListedNodes = "DEFAULT_PATH_FOR_NON_LISTED_NODES"
+
+	SharedPathAnnotation = "local-path-provisioner/shared-path"
+
+	SelectedNodeName = "local-path-provisioner/selecetd-node"
 )
 
 var (
@@ -53,6 +57,7 @@ type LocalPathProvisioner struct {
 type NodePathMapData struct {
 	Node  string   `json:"node,omitempty"`
 	Paths []string `json:"paths,omitempty"`
+	SharedPath bool `json:"shared_path"`
 }
 
 type ConfigData struct {
@@ -61,6 +66,7 @@ type ConfigData struct {
 
 type NodePathMap struct {
 	Paths map[string]struct{}
+	SharedPath bool
 }
 
 type Config struct {
@@ -158,6 +164,10 @@ func (p *LocalPathProvisioner) getRandomPathOnNode(node string) (string, error) 
 	for path = range paths {
 		break
 	}
+
+	if npMap.SharedPath {
+		path = "shared://"+path
+	}
 	return path, nil
 }
 
@@ -181,6 +191,13 @@ func (p *LocalPathProvisioner) Provision(opts pvController.ProvisionOptions) (*v
 		return nil, err
 	}
 
+	sharedPath := false
+
+	if strings.Index(basePath,"shared://") == 0 {
+		sharedPath = true
+		basePath = strings.Replace(basePath,"shared://","",1)
+	}
+
 	name := opts.PVName
 	folderName := strings.Join([]string{name, opts.PVC.Namespace, opts.PVC.Name}, "_")
 
@@ -198,6 +215,34 @@ func (p *LocalPathProvisioner) Provision(opts pvController.ProvisionOptions) (*v
 
 	fs := v1.PersistentVolumeFilesystem
 	hostPathType := v1.HostPathDirectoryOrCreate
+
+	if sharedPath{
+
+		return &v1.PersistentVolume{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: name,
+				Annotations: map[string]string{
+					SharedPathAnnotation : basePath,
+					SelectedNodeName: node.Name,
+				},
+			},
+			Spec: v1.PersistentVolumeSpec{
+				PersistentVolumeReclaimPolicy: *opts.StorageClass.ReclaimPolicy,
+				AccessModes:                   pvc.Spec.AccessModes,
+				VolumeMode:                    &fs,
+				Capacity: v1.ResourceList{
+					v1.ResourceName(v1.ResourceStorage): pvc.Spec.Resources.Requests[v1.ResourceName(v1.ResourceStorage)],
+				},
+				PersistentVolumeSource: v1.PersistentVolumeSource{
+					HostPath: &v1.HostPathVolumeSource{
+						Path: path,
+						Type: &hostPathType,
+					},
+				},
+			},
+		}, nil
+	}
+
 	return &v1.PersistentVolume{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
@@ -240,7 +285,7 @@ func (p *LocalPathProvisioner) Delete(pv *v1.PersistentVolume) (err error) {
 	defer func() {
 		err = errors.Wrapf(err, "failed to delete volume %v", pv.Name)
 	}()
-	path, node, err := p.getPathAndNodeForPV(pv)
+	path, node, _, err := p.getPathAndNodeForPV(pv)
 	if err != nil {
 		return err
 	}
@@ -257,45 +302,52 @@ func (p *LocalPathProvisioner) Delete(pv *v1.PersistentVolume) (err error) {
 	return nil
 }
 
-func (p *LocalPathProvisioner) getPathAndNodeForPV(pv *v1.PersistentVolume) (path, node string, err error) {
+func (p *LocalPathProvisioner) getPathAndNodeForPV(pv *v1.PersistentVolume) (path, node string, sharedPath bool , err error) {
 	defer func() {
 		err = errors.Wrapf(err, "failed to delete volume %v", pv.Name)
 	}()
 
 	hostPath := pv.Spec.PersistentVolumeSource.HostPath
 	if hostPath == nil {
-		return "", "", fmt.Errorf("no HostPath set")
+		return "", "", false, fmt.Errorf("no HostPath set")
 	}
 	path = hostPath.Path
 
-	nodeAffinity := pv.Spec.NodeAffinity
-	if nodeAffinity == nil {
-		return "", "", fmt.Errorf("no NodeAffinity set")
-	}
-	required := nodeAffinity.Required
-	if required == nil {
-		return "", "", fmt.Errorf("no NodeAffinity.Required set")
-	}
+	sharedPath = false
 
-	node = ""
-	for _, selectorTerm := range required.NodeSelectorTerms {
-		for _, expression := range selectorTerm.MatchExpressions {
-			if expression.Key == KeyNode && expression.Operator == v1.NodeSelectorOpIn {
-				if len(expression.Values) != 1 {
-					return "", "", fmt.Errorf("multiple values for the node affinity")
+	node = pv.Annotations[SelectedNodeName]
+
+	if _,sharedPath := pv.Annotations[SharedPathAnnotation]; !sharedPath {
+
+		nodeAffinity := pv.Spec.NodeAffinity
+		if nodeAffinity == nil {
+			return "", "", sharedPath, fmt.Errorf("no NodeAffinity set")
+		}
+		required := nodeAffinity.Required
+		if required == nil {
+			return "", "", sharedPath, fmt.Errorf("no NodeAffinity.Required set")
+		}
+
+		for _, selectorTerm := range required.NodeSelectorTerms {
+			for _, expression := range selectorTerm.MatchExpressions {
+				if expression.Key == KeyNode && expression.Operator == v1.NodeSelectorOpIn {
+					if len(expression.Values) != 1 {
+						return "", "" , sharedPath , fmt.Errorf("multiple values for the node affinity")
+					}
+					node = expression.Values[0]
+					break
 				}
-				node = expression.Values[0]
+			}
+			if node != "" {
 				break
 			}
 		}
-		if node != "" {
-			break
+		if node == "" {
+			return "", "", false , fmt.Errorf("cannot find affinited node")
 		}
 	}
-	if node == "" {
-		return "", "", fmt.Errorf("cannot find affinited node")
-	}
-	return path, node, nil
+
+	return path, node, sharedPath , nil
 }
 
 func (p *LocalPathProvisioner) createHelperPod(action ActionType, cmdsForPath []string, name, path, node string) (err error) {

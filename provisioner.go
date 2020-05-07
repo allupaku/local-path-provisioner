@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +35,8 @@ const (
 	SharedPathAnnotation = "local-path-provisioner/shared-path"
 
 	SelectedNodeName = "local-path-provisioner/selected-node"
+
+	AllocatedPVName = "local-path-provisioner/allocated-pv-name"
 )
 
 var (
@@ -180,26 +183,36 @@ func (p *LocalPathProvisioner) Provision(opts pvController.ProvisionOptions) (*v
 	if opts.SelectedNode == nil {
 		return nil, fmt.Errorf("configuration error, no node was specified")
 	}
-
 	basePath, err := p.getRandomPathOnNode(node.Name)
 	if err != nil {
 		return nil, err
 	}
 
-	sharedPath := false
+	nodeAffinityEnabled := false
+	if node_affinity_string,ok := opts.PVC.Annotations["local-path-provisioner/node_affinity"]; ok {
+		nodeAffinityEnabled,err = strconv.ParseBool(node_affinity_string)
+	}
 
-	if strings.Index(basePath,"shared://") >=0  {
-		sharedPath = true
-		basePath = strings.Replace(basePath,"shared://","",1)
+	mountToStaticLocation := false
+	staticLocation:= ""
+
+	if staticLocation,ok := opts.PVC.Annotations["local-path-provisioner/static_location"]; ok {
+		logrus.Infof("Static location passed for pvc via annotation %v",staticLocation)
+		mountToStaticLocation = true
 	}
 
 	for _, accessMode := range pvc.Spec.AccessModes {
-		if accessMode != v1.ReadWriteOnce && !sharedPath {
-			return nil, fmt.Errorf("Only support ReadWriteOnce access mode with sharedPath value %v ",sharedPath)
+		if accessMode != v1.ReadWriteOnce && nodeAffinityEnabled {
+			return nil, fmt.Errorf("Only support ReadWriteOnce access mode with nodeAffinityEnabled value %v ", nodeAffinityEnabled)
 		}
 	}
 
 	name := opts.PVName
+
+	if mountToStaticLocation{
+		name = staticLocation
+	}
+
 	folderName := strings.Join([]string{name, opts.PVC.Namespace, opts.PVC.Name}, "_")
 
 	path := filepath.Join(basePath, folderName)
@@ -210,50 +223,28 @@ func (p *LocalPathProvisioner) Provision(opts pvController.ProvisionOptions) (*v
 		"-m", "0777",
 		"-p",
 	}
-	if err := p.createHelperPod(ActionTypeCreate, createCmdsForPath, name, path, node.Name); err != nil {
+	if err := p.createHelperPod(ActionTypeCreate, createCmdsForPath, folderName, path, node.Name); err != nil {
 		return nil, err
 	}
 
 	fs := v1.PersistentVolumeFilesystem
 	hostPathType := v1.HostPathDirectoryOrCreate
 
-	if sharedPath{
-
-		return &v1.PersistentVolume{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: name,
-				Annotations: map[string]string{
-					SharedPathAnnotation : basePath,
-					SelectedNodeName: node.Name,
-				},
-			},
-			Spec: v1.PersistentVolumeSpec{
-				PersistentVolumeReclaimPolicy: *opts.StorageClass.ReclaimPolicy,
-				AccessModes:                   pvc.Spec.AccessModes,
-				VolumeMode:                    &fs,
-				Capacity: v1.ResourceList{
-					v1.ResourceName(v1.ResourceStorage): pvc.Spec.Resources.Requests[v1.ResourceName(v1.ResourceStorage)],
-				},
-				PersistentVolumeSource: v1.PersistentVolumeSource{
-					HostPath: &v1.HostPathVolumeSource{
-						Path: path,
-						Type: &hostPathType,
-					},
-				},
-			},
-		}, nil
-	}
-
-	return &v1.PersistentVolume{
+	pvReturn := &v1.PersistentVolume{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
+			Annotations: map[string]string{
+				SharedPathAnnotation : basePath,
+				SelectedNodeName: node.Name,
+				AllocatedPVName: opts.PVName,
+			},
 		},
 		Spec: v1.PersistentVolumeSpec{
 			PersistentVolumeReclaimPolicy: *opts.StorageClass.ReclaimPolicy,
 			AccessModes:                   pvc.Spec.AccessModes,
 			VolumeMode:                    &fs,
 			Capacity: v1.ResourceList{
-				v1.ResourceName(v1.ResourceStorage): pvc.Spec.Resources.Requests[v1.ResourceName(v1.ResourceStorage)],
+				v1.ResourceStorage: pvc.Spec.Resources.Requests[v1.ResourceStorage],
 			},
 			PersistentVolumeSource: v1.PersistentVolumeSource{
 				HostPath: &v1.HostPathVolumeSource{
@@ -261,25 +252,31 @@ func (p *LocalPathProvisioner) Provision(opts pvController.ProvisionOptions) (*v
 					Type: &hostPathType,
 				},
 			},
-			NodeAffinity: &v1.VolumeNodeAffinity{
-				Required: &v1.NodeSelector{
-					NodeSelectorTerms: []v1.NodeSelectorTerm{
-						{
-							MatchExpressions: []v1.NodeSelectorRequirement{
-								{
-									Key:      KeyNode,
-									Operator: v1.NodeSelectorOpIn,
-									Values: []string{
-										node.Name,
-									},
+		},
+	}
+
+	if nodeAffinityEnabled{
+
+		pvReturn.Spec.NodeAffinity = &v1.VolumeNodeAffinity{
+			Required: &v1.NodeSelector{
+				NodeSelectorTerms: []v1.NodeSelectorTerm{
+					{
+						MatchExpressions: []v1.NodeSelectorRequirement{
+							{
+								Key:      KeyNode,
+								Operator: v1.NodeSelectorOpIn,
+								Values: []string{
+									node.Name,
 								},
 							},
 						},
 					},
 				},
 			},
-		},
-	}, nil
+		}
+	}
+
+	return pvReturn, nil
 }
 
 func (p *LocalPathProvisioner) Delete(pv *v1.PersistentVolume) (err error) {

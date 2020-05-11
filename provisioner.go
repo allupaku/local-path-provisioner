@@ -37,6 +37,10 @@ const (
 	SelectedNodeName = "local-path-provisioner/selected-node"
 
 	AllocatedPVName = "local-path-provisioner/allocated-pv-name"
+
+	NodeAffinityAnnotation = "local-path-provisioner/node_affinity"
+
+	StaticLocationAnnotation = "local-path-provisioner/static_location"
 )
 
 var (
@@ -189,14 +193,14 @@ func (p *LocalPathProvisioner) Provision(opts pvController.ProvisionOptions) (*v
 	}
 
 	nodeAffinityEnabled := false
-	if node_affinity_string,ok := opts.PVC.Annotations["local-path-provisioner/node_affinity"]; ok {
+	if node_affinity_string,ok := opts.PVC.Annotations[NodeAffinityAnnotation]; ok {
 		nodeAffinityEnabled,err = strconv.ParseBool(node_affinity_string)
 	}
 
 	mountToStaticLocation := false
 	staticLocation:= ""
 
-	if staticLocation,ok := opts.PVC.Annotations["local-path-provisioner/static_location"]; ok {
+	if staticLocation,ok := opts.PVC.Annotations[StaticLocationAnnotation]; ok {
 		logrus.Infof("Static location passed for pvc via annotation %v",staticLocation)
 		mountToStaticLocation = true
 	}

@@ -40,7 +40,7 @@ const (
 
 	NodeAffinityAnnotation = "local-path-provisioner/node_affinity"
 
-	StaticLocationAnnotation = "local-path-provisioner/static_location"
+	//StaticLocationAnnotation = "local-path-provisioner/static_location"
 )
 
 var (
@@ -64,7 +64,6 @@ type LocalPathProvisioner struct {
 type NodePathMapData struct {
 	Node  string   `json:"node,omitempty"`
 	Paths []string `json:"paths,omitempty"`
-	SharedPath bool `json:"shared_path"`
 }
 
 type ConfigData struct {
@@ -197,13 +196,16 @@ func (p *LocalPathProvisioner) Provision(opts pvController.ProvisionOptions) (*v
 		nodeAffinityEnabled,err = strconv.ParseBool(node_affinity_string)
 	}
 
-	mountToStaticLocation := false
-	staticLocation:= ""
-
-	if staticLocation,ok := opts.PVC.Annotations[StaticLocationAnnotation]; ok {
-		logrus.Infof("Static location passed for pvc via annotation %v",staticLocation)
-		mountToStaticLocation = true
-	}
+	//mountToStaticLocation := false
+	//staticLocation:= ""
+	//
+	//if staticLocation,ok := opts.PVC.Annotations[StaticLocationAnnotation]; ok {
+	//	logrus.Infof("Static location passed for pvc via annotation %v",staticLocation)
+	//	if staticLocation != ""{
+	//		mountToStaticLocation = true
+	//	}
+	//
+	//}
 
 	for _, accessMode := range pvc.Spec.AccessModes {
 		if accessMode != v1.ReadWriteOnce && nodeAffinityEnabled {
@@ -213,11 +215,11 @@ func (p *LocalPathProvisioner) Provision(opts pvController.ProvisionOptions) (*v
 
 	name := opts.PVName
 
-	if mountToStaticLocation{
-		name = staticLocation
-	}
+	//if mountToStaticLocation{
+	//	name = staticLocation
+	//}
 
-	folderName := strings.Join([]string{name, opts.PVC.Namespace, opts.PVC.Name}, "_")
+	folderName := strings.Join([]string{name, opts.PVC.Namespace, opts.PVC.Name}, "-")
 
 	path := filepath.Join(basePath, folderName)
 	logrus.Infof("Creating volume %v at %v:%v", name, node.Name, path)
@@ -491,7 +493,6 @@ func canonicalizeConfig(data *ConfigData) (cfg *Config, err error) {
 			}
 			npMap.Paths[path] = struct{}{}
 		}
-		npMap.SharedPath = n.SharedPath
 	}
 	return cfg, nil
 }
